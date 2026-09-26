@@ -36,12 +36,21 @@ jobs:
       - name: Run check
         env:
           BOOKSY_URL: ${{ secrets.BOOKSY_URL }}
+          SERVICE_NAME: ${{ secrets.SERVICE_NAME }}   # optional; defaults to "Integrative Massage One hour"
           ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
         run: python monitor_booksy.py
+
+      - name: Upload debug screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: debug-screenshots
+          path: debug_*.png
+          retention-days: 3
 
       - name: Save state for next run
         uses: actions/cache/save@v4
