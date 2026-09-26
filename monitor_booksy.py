@@ -100,6 +100,19 @@ def check_availability(url: str, service_name: str):
             )
         )
         page.goto(url, wait_until="networkidle", timeout=45000)
+
+        # Dismiss the Cookiebot consent banner, if present — it sits on top
+        # of the page and blocks every click underneath it until dismissed.
+        try:
+            page.get_by_role("button", name="OK", exact=True).click(timeout=5000)
+            page.wait_for_timeout(500)
+        except Exception:
+            try:
+                page.locator('button:has-text("OK")').first.click(timeout=3000)
+                page.wait_for_timeout(500)
+            except Exception:
+                pass  # no banner this time, or it used different wording
+
         page.screenshot(path="debug_1_landing.png", full_page=True)
 
         steps_ok = {"expand": False, "first_book": False, "second_book": False}
