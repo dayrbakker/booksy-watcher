@@ -1,0 +1,51 @@
+# Save this file as: .github/workflows/check-availability.yml
+# in a GitHub repo. Make the repo PUBLIC (Settings -> General -> Danger Zone
+# -> Change visibility) and Actions minutes are unlimited and free. The
+# code has nothing sensitive in it - your email/password live in encrypted
+# repo Secrets, not in this file.
+
+name: Check Booksy availability
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # once an hour, on the hour (GitHub may delay this a few minutes under load)
+  workflow_dispatch: {}    # lets you trigger a manual test run from the Actions tab
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Restore last known state
+        uses: actions/cache@v4
+        with:
+          path: state.json
+          key: booksy-state-${{ github.run_id }}
+          restore-keys: booksy-state-
+
+      - name: Run check
+        env:
+          BOOKSY_URL: ${{ secrets.BOOKSY_URL }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: python monitor_booksy.py
+
+      - name: Save state for next run
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: state.json
+          key: booksy-state-${{ github.run_id }}
