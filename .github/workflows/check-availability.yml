@@ -24,7 +24,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          playwright install --with-deps chromium
+          playwright install --with-deps chrome
+          sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: Restore last known state
         uses: actions/cache@v4
@@ -42,7 +43,9 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-        run: python monitor_booksy.py
+        # xvfb-run gives the browser a real (virtual) display instead of
+        # true headless mode, which is part of what was getting it flagged.
+        run: xvfb-run -a python monitor_booksy.py
 
       - name: Upload debug screenshots
         uses: actions/upload-artifact@v4
