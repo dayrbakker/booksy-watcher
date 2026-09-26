@@ -26,11 +26,23 @@ loaded some other way):
     SMTP_USER         - the sending email address
     SMTP_PASSWORD     - an app password for that address (not your login password)
 
-Debug screenshots are saved to debug_1_landing.png, debug_2_services.png,
-debug_3_service_selected.png, debug_4_slots.png on every run (whether or not
-it succeeds). In GitHub Actions these get uploaded as a downloadable
-"debug-screenshots" artifact on the run's summary page — open those if a
-run behaves unexpectedly, so we can see exactly where the click path landed.
+Click path (matches the real UI, row by row):
+    1. Load the business page.
+    2. Click the caret to expand "Default Category" under "Services".
+    3. In the expanded list, find the row for SERVICE_NAME and click the
+       blue "Book" button in that row.
+    4. On the new screen this opens, click the blue "book" link next to
+       SERVICE_NAME in the first matching row.
+    5. Check the resulting screen's text for "No availability at this time".
+
+Steps 3 and 4 use Playwright's layout-aware ":right-of()" selector to find
+the button/link sitting next to the service's name, without needing to know
+the exact CSS classes Booksy uses.
+
+Debug screenshots are saved after each step (debug_1_landing.png,
+debug_2_expanded.png, debug_3_after_first_book.png, debug_4_slots.png) on
+every run, success or failure. In GitHub Actions these get uploaded as a
+downloadable "debug-screenshots" artifact on the run's summary page.
 """
 
 import os
@@ -43,14 +55,36 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 NO_AVAILABILITY_TEXT = "no availability at this time"
-# Markers that mean we're still on the business listing page (services list,
-# reviews, etc.) rather than inside the actual slot picker. If these are
-# still present after we've tried to click through, we did NOT reach the
-# slot picker, and must not report "available" — that would be a false
-# positive, just like what happened on the first real run.
-LANDING_PAGE_MARKERS = ["default category", "how reviews work", "based on"]
+# If any of these show up on the final screen, we got bounced to the
+# generic Booksy homepage instead of reaching the slot picker (this is
+# what happened on an earlier run) — never treat that as "available".
+HOMEPAGE_MARKERS = [
+    "discover and book beauty & wellness professionals",
+    "grow my business",
+    "cut the phone tag",
+]
 DEFAULT_SERVICE_NAME = "Integrative Massage One hour"
 STATE_FILE = Path("state.json")
+
+
+def _click_near(page, anchor_text: str, tag: str = "*", timeout: int = 8000) -> bool:
+    """Click the nearest clickable element positioned to the right of the
+    element containing anchor_text (e.g. the "Book" button on the same row
+    as a service name). Tries a couple of tag/text combinations since we
+    don't know Booksy's exact markup. Returns True if a click succeeded."""
+    candidates = [
+        f'button:right-of(:text("{anchor_text}"))',
+        f'a:right-of(:text("{anchor_text}"))',
+        f':text("Book"):right-of(:text("{anchor_text}"))',
+        f':text("book"):right-of(:text("{anchor_text}"))',
+    ]
+    for selector in candidates:
+        try:
+            page.locator(selector).first.click(timeout=timeout)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def check_availability(url: str, service_name: str):
@@ -68,36 +102,31 @@ def check_availability(url: str, service_name: str):
         page.goto(url, wait_until="networkidle", timeout=45000)
         page.screenshot(path="debug_1_landing.png", full_page=True)
 
-        # Step 1: click the "Book" button under the Services / Default
-        # Category section, which should expand or reveal the list of
-        # individual services.
-        try:
-            page.get_by_role("button", name="Book", exact=True).first.click(timeout=8000)
-        except Exception:
-            try:
-                page.get_by_text("Book", exact=True).first.click(timeout=5000)
-            except Exception:
-                pass
-        page.wait_for_timeout(2000)
-        page.screenshot(path="debug_2_services.png", full_page=True)
+        steps_ok = {"expand": False, "first_book": False, "second_book": False}
 
-        # Step 2: click the specific service by name.
+        # Step 1: click the caret/header to expand "Default Category".
         try:
-            page.get_by_text(service_name, exact=False).first.click(timeout=8000)
-        except Exception:
-            pass
-        page.wait_for_timeout(2000)
-        page.screenshot(path="debug_3_service_selected.png", full_page=True)
+            page.get_by_text("Default Category", exact=False).first.click(timeout=8000)
+            steps_ok["expand"] = True
+        except Exception as e:
+            print(f"Could not expand 'Default Category': {e}")
+        page.wait_for_timeout(1500)
+        page.screenshot(path="debug_2_expanded.png", full_page=True)
 
-        # Step 3: click "Book" again — this is the service-specific CTA that
-        # should load (or reveal) the actual date/time slot picker.
-        try:
-            page.get_by_role("button", name="Book", exact=True).first.click(timeout=8000)
-        except Exception:
-            try:
-                page.get_by_text("Book", exact=True).first.click(timeout=5000)
-            except Exception:
-                pass
+        # Step 2: click the blue "Book" button in the row for our service.
+        if steps_ok["expand"]:
+            steps_ok["first_book"] = _click_near(page, service_name)
+            if not steps_ok["first_book"]:
+                print(f"Could not find a 'Book' button next to '{service_name}' after expanding.")
+        page.wait_for_timeout(2500)
+        page.screenshot(path="debug_3_after_first_book.png", full_page=True)
+
+        # Step 3: on the new screen, click the "book" link next to the
+        # service in the first matching row.
+        if steps_ok["first_book"]:
+            steps_ok["second_book"] = _click_near(page, service_name)
+            if not steps_ok["second_book"]:
+                print(f"Could not find a second 'book' link next to '{service_name}'.")
         page.wait_for_timeout(3000)  # let the slot picker finish rendering
         page.screenshot(path="debug_4_slots.png", full_page=True)
 
@@ -106,16 +135,25 @@ def check_availability(url: str, service_name: str):
         browser.close()
 
         body_lower = body_text.lower()
-        reached_slot_picker = not any(marker in body_lower for marker in LANDING_PAGE_MARKERS)
+        redirected_home = any(marker in body_lower for marker in HOMEPAGE_MARKERS)
+        reached_slot_picker = (
+            steps_ok["expand"] and steps_ok["first_book"] and steps_ok["second_book"] and not redirected_home
+        )
 
         if reached_slot_picker:
             is_available = NO_AVAILABILITY_TEXT not in body_lower
         else:
-            # We never actually left the listing page — treat as "not
-            # available" rather than risk a false positive.
+            # Something in the click path failed, or we got bounced to the
+            # homepage — treat as "not available" rather than risk a false
+            # positive.
             is_available = False
 
-        debug_text = f"Final URL: {current_url}\n\n{body_text[:2500]}"
+        debug_text = (
+            f"Final URL: {current_url}\n"
+            f"Steps -> expanded: {steps_ok['expand']}, first Book click: {steps_ok['first_book']}, "
+            f"second book click: {steps_ok['second_book']}, redirected to homepage: {redirected_home}\n\n"
+            f"{body_text[:2500]}"
+        )
         return is_available, reached_slot_picker, debug_text
 
 
